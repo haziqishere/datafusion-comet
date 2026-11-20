@@ -25,7 +25,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometIcebergWriteExec, CometMapInBatchExec, CometNativeWriteExec, CometPlan, CometRangeExec, CometSparkToColumnarExec}
-import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.shims.{MapInBatchInfo, ShimCometMapInBatch}
 import org.apache.spark.sql.comet.util.Utils.containsVariantType
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
@@ -176,6 +176,13 @@ case class EliminateRedundantTransitions(session: SparkSession)
             CometColumnarShuffle,
             _) =>
         s.withNewChildren(Seq(child))
+
+      // Native shuffle reads Arrow-backed Comet vectors, not the Spark vectors `RowToColumnar`
+      // fills. Spark inserts one when the child turns row-based after Comet chose native shuffle,
+      // so put the shuffle on the JVM columnar shuffle, which reads the rows.
+      case s @ CometShuffleExchangeExec(_, RowToColumnarExec(child), _, _, CometNativeShuffle, _)
+          if CometShuffleExchangeExec.columnarShuffleSupports(s, child) =>
+        s.copy(child = child, shuffleType = CometColumnarShuffle)
     }
 
     eliminatedPlan match {
